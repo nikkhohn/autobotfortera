@@ -32,9 +32,15 @@ API_ID       = int(os.getenv("TG_API_ID"))
 API_HASH     = os.getenv("TG_API_HASH")
 SESSION_STRING = os.getenv("SESSION_STRING")  # Railway pe yeh use hoga
 
-CHANNEL_A    = os.getenv("CHANNEL_A")   # Source channel
-CHANNEL_B    = os.getenv("CHANNEL_B")   # Video upload channel
-CHANNEL_C    = os.getenv("CHANNEL_C")   # Links save channel
+def parse_channel(val):
+    """@username as-is, numeric ID as int."""
+    if val and val.lstrip("-").isdigit():
+        return int(val)
+    return val
+
+CHANNEL_A    = parse_channel(os.getenv("CHANNEL_A"))
+CHANNEL_B    = parse_channel(os.getenv("CHANNEL_B"))
+CHANNEL_C    = parse_channel(os.getenv("CHANNEL_C"))
 TERA_BOT     = os.getenv("TERA_BOT")    # @username of TeraBox bot
 STREAM_BOT   = os.getenv("STREAM_BOT")  # @username of Stream bot
 
