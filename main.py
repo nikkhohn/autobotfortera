@@ -150,15 +150,6 @@ async def main():
     )
     bot_client = TelegramClient("bot_session", API_ID, API_HASH)
 
-    await user_client.start()
-    await bot_client.start(bot_token=BOT_TOKEN)
-
-    me = await user_client.get_me()
-    bot_me = await bot_client.get_me()
-    log.info(f"✅ UserBot: {me.first_name} (@{me.username})")
-    log.info(f"✅ Bot: @{bot_me.username}")
-    log.info("⏳ Messages ka wait kar raha hun...")
-
     @bot_client.on(events.NewMessage(incoming=True))
     async def handle_bot_message(event):
         msg = event.message
@@ -205,6 +196,15 @@ async def main():
         else:
             await bot_reply(bot_client, chat_id, "❓ TeraBox link nahi mili. Sahi link bhejo.")
 
+
+    await user_client.start()
+    await bot_client.start(bot_token=BOT_TOKEN)
+
+    me = await user_client.get_me()
+    bot_me = await bot_client.get_me()
+    log.info(f"✅ UserBot: {me.first_name} (@{me.username})")
+    log.info(f"✅ Bot: @{bot_me.username}")
+    log.info("⏳ Messages ka wait kar raha hun...")
     await asyncio.gather(
         user_client.run_until_disconnected(),
         bot_client.run_until_disconnected(),
