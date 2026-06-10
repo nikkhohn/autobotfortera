@@ -61,31 +61,44 @@ bot_client = TelegramClient(
 # Pending requests store
 user_pending = {}  # chat_id: {"image": bytes, "tera_url": str}
 
+# Queue — ek waqt pe sirf ek TeraBox request
+tera_queue = asyncio.Queue()
+tera_lock = asyncio.Lock()
+
 
 # ── Bot se reply karne ka helper ──────────────────────────────
 async def bot_reply(chat_id: int, text: str):
     await bot_client.send_message(chat_id, text, parse_mode="md")
 
 
-# ── TeraBox bot se video lo ───────────────────────────────────
+# ── TeraBox bot se video lo (LOCKED — ek waqt pe sirf ek request) ──
 async def get_video_from_tera_bot(tera_url: str):
-    log.info(f"TeraBox bot ko URL bhej raha hun: {tera_url}")
-    tera_entity = await user_client.get_entity(TERA_BOT)
-    await user_client.send_message(tera_entity, tera_url)
+    async with tera_lock:  # Doosri request yahan rukegi jab tak pehli complete na ho
+        log.info(f"TeraBox bot ko URL bhej raha hun: {tera_url}")
+        tera_entity = await user_client.get_entity(TERA_BOT)
 
-    for attempt in range(36):
-        await asyncio.sleep(5)
-        messages = await user_client.get_messages(tera_entity, limit=5)
-        for msg in messages:
-            if msg.media and isinstance(msg.media, MessageMediaDocument):
-                mime = getattr(msg.media.document, "mime_type", "")
-                if "video" in mime or "octet-stream" in mime:
-                    log.info("✅ TeraBox bot se video mil gaya!")
-                    return msg
-        log.info(f"TeraBox bot ka wait... ({attempt + 1}/36)")
+        # Bhejne se PEHLE last message ID note karo
+        old_msgs = await user_client.get_messages(tera_entity, limit=1)
+        last_id = old_msgs[0].id if old_msgs else 0
+        log.info(f"Last message ID noted: {last_id}")
 
-    log.error("❌ TeraBox bot ne time pe video nahi diya.")
-    return None
+        # Link bhejo
+        await user_client.send_message(tera_entity, tera_url)
+
+        # Sirf last_id ke BAAD aane wala VIDEO dhundo
+        for attempt in range(36):
+            await asyncio.sleep(5)
+            new_msgs = await user_client.get_messages(tera_entity, min_id=last_id, limit=10)
+            for msg in new_msgs:
+                if msg.media and isinstance(msg.media, MessageMediaDocument):
+                    mime = getattr(msg.media.document, "mime_type", "")
+                    if "video" in mime or "octet-stream" in mime:
+                        log.info(f"✅ Sahi naya video mil gaya! ID: {msg.id}")
+                        return msg
+            log.info(f"TeraBox bot ka wait... ({attempt + 1}/36)")
+
+        log.error("❌ TeraBox bot ne time pe video nahi diya.")
+        return None
 
 
 # ── Stream bot se link lo ─────────────────────────────────────
