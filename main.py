@@ -34,6 +34,7 @@ def parse_channel(val):
     return val
 
 CHANNEL_B = parse_channel(os.getenv("CHANNEL_B"))
+CHANNEL_C = parse_channel(os.getenv("CHANNEL_C"))
 
 TERABOX_REGEX = re.compile(
     r"https?://(?:www\.)?(?:terabox|1024terabox|terafileshare|freeterabox|"
@@ -122,18 +123,30 @@ async def process_request(bot_client, user_client, tera_lock, chat_id, img_bytes
     await bot_reply(bot_client, chat_id, "▶️ Stream link ban raha hai...")
     stream_link = await get_stream_link(user_client, tera_video_msg)
 
-    # 4. Channel B pe store
+    # 4. Channel B pe store (no caption, no forward tag)
     channel_b_entity = await user_client.get_entity(CHANNEL_B)
-    await user_client.forward_messages(entity=channel_b_entity, messages=tera_video_msg)
+    await user_client.send_file(
+        channel_b_entity,
+        file=tera_video_msg.media,
+        caption=""
+    )
 
-    # 5. Sirf 2 links user ko
-    lines = ["✅ **Done!**\n"]
+    # 5. User ko video bhejo (no caption, no forward tag)
+    await bot_client.send_file(
+        chat_id,
+        file=tera_video_msg.media,
+        caption=""
+    )
+
+    # 6. Channel C pe links save karo (image format mein)
+    channel_c_entity = await user_client.get_entity(CHANNEL_C)
+    channel_c_text = "✅ **Links Ready!**"
     if catbox_link:
-        lines.append(f"🖼 **Cover:**\n{catbox_link}")
+        channel_c_text += f"\n\n🖼 **Photo:**\n{catbox_link}"
     if stream_link:
-        lines.append(f"▶️ **Stream:**\n{stream_link}")
+        channel_c_text += f"\n\n🎬 **Stream Link:**\n{stream_link}"
+    await user_client.send_message(channel_c_entity, channel_c_text, parse_mode="md")
 
-    await bot_reply(bot_client, chat_id, "\n\n".join(lines))
     log.info(f"🎉 Done for {chat_id}")
     user_pending.pop(chat_id, None)
 
