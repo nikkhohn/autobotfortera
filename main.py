@@ -1,5 +1,6 @@
 """
-Telegram Auto-Bot — Main Orchestrator
+Telegram Bot + Telethon UserBot
+User @Bot ko message kare → Telethon (user account) process kare → Bot reply kare
 """
 
 import asyncio
@@ -12,6 +13,7 @@ from telethon.sessions import StringSession
 from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
 from dotenv import load_dotenv
 from catbox import upload_to_catbox
+import httpx
 
 load_dotenv()
 
@@ -25,6 +27,7 @@ log = logging.getLogger(__name__)
 API_ID         = int(os.getenv("TG_API_ID"))
 API_HASH       = os.getenv("TG_API_HASH")
 SESSION_STRING = os.getenv("SESSION_STRING")
+BOT_TOKEN      = os.getenv("BOT_TOKEN")
 
 TERA_BOT   = os.getenv("TERA_BOT")
 STREAM_BOT = os.getenv("STREAM_BOT")
@@ -34,134 +37,202 @@ def parse_channel(val):
         return int(val)
     return val
 
-CHANNEL_A = parse_channel(os.getenv("CHANNEL_A"))
 CHANNEL_B = parse_channel(os.getenv("CHANNEL_B"))
-CHANNEL_C = parse_channel(os.getenv("CHANNEL_C"))
 
+# TeraBox sabhi domains
 TERABOX_REGEX = re.compile(
     r"https?://(?:www\.)?(?:terabox|1024terabox|terafileshare|freeterabox|"
-    r"4funbox|teraboxapp|mirrobox|nephobox|momerybox|tibibox|"
-    r"gibibox|qrubox|jobespinas)\.(?:com|net|app)/[^\s]+",
+    r"4funbox|teraboxapp|mirrobox|nephobox|momerybox|tibibox|gibibox|qrubox|"
+    r"jobespinas|teraboxlink|teraboxshare|mirrorbox)\.(?:com|net|app)/[^\s]+",
     re.IGNORECASE
 )
 
-session = StringSession(SESSION_STRING) if SESSION_STRING else StringSession()
-client = TelegramClient(session, API_ID, API_HASH)
+# ── Clients ───────────────────────────────────────────────────
+# Telethon user account — processing ke liye
+user_client = TelegramClient(
+    StringSession(SESSION_STRING) if SESSION_STRING else StringSession(),
+    API_ID, API_HASH
+)
+# Bot client — users se baat karne ke liye
+bot_client = TelegramClient(
+    "bot_session", API_ID, API_HASH
+)
+
+# Pending requests store
+user_pending = {}  # chat_id: {"image": bytes, "tera_url": str}
 
 
+# ── Bot se reply karne ka helper ──────────────────────────────
+async def bot_reply(chat_id: int, text: str):
+    await bot_client.send_message(chat_id, text, parse_mode="md")
+
+
+# ── TeraBox bot se video lo ───────────────────────────────────
 async def get_video_from_tera_bot(tera_url: str):
     log.info(f"TeraBox bot ko URL bhej raha hun: {tera_url}")
-    tera_entity = await client.get_entity(TERA_BOT)
-    await client.send_message(tera_entity, tera_url)
+    tera_entity = await user_client.get_entity(TERA_BOT)
+    await user_client.send_message(tera_entity, tera_url)
 
     for attempt in range(36):
         await asyncio.sleep(5)
-        messages = await client.get_messages(tera_entity, limit=5)
+        messages = await user_client.get_messages(tera_entity, limit=5)
         for msg in messages:
             if msg.media and isinstance(msg.media, MessageMediaDocument):
                 mime = getattr(msg.media.document, "mime_type", "")
                 if "video" in mime or "octet-stream" in mime:
                     log.info("✅ TeraBox bot se video mil gaya!")
                     return msg
-        log.info(f"TeraBox bot ka wait kar raha hun... ({attempt + 1}/36)")
+        log.info(f"TeraBox bot ka wait... ({attempt + 1}/36)")
 
     log.error("❌ TeraBox bot ne time pe video nahi diya.")
     return None
 
 
-async def get_stream_link_from_bot(video_msg) -> str | None:
-    log.info("Stream bot ko video forward kar raha hun...")
-    stream_entity = await client.get_entity(STREAM_BOT)
-
-    await client.forward_messages(
-        entity=stream_entity,
-        messages=video_msg,
-    )
+# ── Stream bot se link lo ─────────────────────────────────────
+async def get_stream_link(video_msg) -> str | None:
+    log.info("Stream bot ko forward kar raha hun...")
+    stream_entity = await user_client.get_entity(STREAM_BOT)
+    await user_client.forward_messages(entity=stream_entity, messages=video_msg)
 
     for attempt in range(24):
         await asyncio.sleep(5)
-        messages = await client.get_messages(stream_entity, limit=3)
+        messages = await user_client.get_messages(stream_entity, limit=3)
         for msg in messages:
-            if msg.text and ("http" in msg.text or "https" in msg.text):
-                log.info(f"✅ Stream link mila: {msg.text.strip()}")
+            if msg.text and "http" in msg.text:
+                log.info("✅ Stream link mila!")
                 return msg.text.strip()
-        log.info(f"Stream bot ka wait kar raha hun... ({attempt + 1}/24)")
+        log.info(f"Stream bot ka wait... ({attempt + 1}/24)")
 
-    log.error("❌ Stream bot ne time pe link nahi diya.")
+    log.error("❌ Stream bot ne link nahi diya.")
     return None
 
 
-@client.on(events.NewMessage(chats=CHANNEL_A))
-async def handle_new_post(event):
-    msg = event.message
-    text = msg.text or msg.caption or ""
+# ── Full Pipeline ─────────────────────────────────────────────
+async def process_request(chat_id: int, img_bytes: bytes | None, tera_url: str):
+    await bot_reply(chat_id, "⏳ Processing shuru kar raha hun...")
 
-    match = TERABOX_REGEX.search(text)
-    if not match:
-        log.info("TeraBox URL nahi mili, skip kar raha hun.")
-        return
-
-    tera_url = match.group(0)
-    log.info(f"🔗 TeraBox URL mili: {tera_url}")
-
+    # 1. Image → Catbox
     catbox_link = None
-    if isinstance(msg.media, MessageMediaPhoto):
-        log.info("📸 Image download kar raha hun...")
-        img_bytes = await client.download_media(msg.media, bytes)
-        log.info("⬆️ Catbox pe upload kar raha hun...")
+    if img_bytes:
+        await bot_reply(chat_id, "📸 Image catbox pe upload ho rahi hai...")
         catbox_link = await upload_to_catbox(img_bytes, filename="cover.jpg")
         if catbox_link:
-            log.info(f"✅ Catbox link: {catbox_link}")
-    else:
-        log.warning("⚠️ Is post mein image nahi hai.")
+            log.info(f"✅ Catbox: {catbox_link}")
+        else:
+            await bot_reply(chat_id, "⚠️ Catbox upload fail hua, aage badhta hun...")
 
+    # 2. TeraBox → Video
+    await bot_reply(chat_id, "🔗 TeraBox se video fetch ho rahi hai... (2-3 min lag sakte hain)")
     tera_video_msg = await get_video_from_tera_bot(tera_url)
     if not tera_video_msg:
-        log.error("❌ Video nahi mila, abort kar raha hun.")
+        await bot_reply(chat_id, "❌ TeraBox se video nahi mila. Dobara try karo.")
+        user_pending.pop(chat_id, None)
         return
 
-    log.info("📤 Channel B pe video forward kar raha hun...")
-    channel_b_entity = await client.get_entity(CHANNEL_B)
-    forwarded_msg = await client.forward_messages(
+    # 3. Video → Channel B
+    await bot_reply(chat_id, "📤 Video channel pe store ho rahi hai...")
+    channel_b_entity = await user_client.get_entity(CHANNEL_B)
+    forwarded_msg = await user_client.forward_messages(
         entity=channel_b_entity,
         messages=tera_video_msg,
     )
-    log.info(f"✅ Channel B pe forward hua — Message ID: {forwarded_msg.id}")
+    log.info(f"✅ Channel B — ID: {forwarded_msg.id}")
 
-    stream_link = await get_stream_link_from_bot(forwarded_msg)
+    # 4. Stream link
+    await bot_reply(chat_id, "▶️ Stream link ban raha hai...")
+    stream_link = await get_stream_link(forwarded_msg)
 
-    log.info("💾 Channel C pe links save kar raha hun...")
-    channel_c_entity = await client.get_entity(CHANNEL_C)
-
-    lines = []
+    # 5. User ko result
+    lines = ["✅ **Done! Yahan hain tumhare links:**\n"]
     if catbox_link:
-        lines.append(f"🖼 **Cover:** {catbox_link}")
+        lines.append(f"🖼 **Cover Image:**\n{catbox_link}")
     if stream_link:
-        lines.append(f"▶️ **Stream:** {stream_link}")
+        lines.append(f"▶️ **Stream Link:**\n{stream_link}")
 
-    channel_b_full = await client.get_entity(CHANNEL_B)
+    channel_b_full = await user_client.get_entity(CHANNEL_B)
     b_username = getattr(channel_b_full, "username", None)
     if b_username:
-        lines.append(f"📁 **Post:** https://t.me/{b_username}/{forwarded_msg.id}")
+        lines.append(f"📁 **Direct Post:**\nhttps://t.me/{b_username}/{forwarded_msg.id}")
 
-    if not lines:
-        log.error("❌ Koi link nahi bana.")
+    await bot_reply(chat_id, "\n\n".join(lines))
+    log.info(f"🎉 Chat {chat_id} ka kaam done!")
+    user_pending.pop(chat_id, None)
+
+
+# ── Bot Event Handler ─────────────────────────────────────────
+@bot_client.on(events.NewMessage(incoming=True))
+async def handle_bot_message(event):
+    msg = event.message
+    chat_id = event.chat_id
+    text = msg.text or msg.caption or ""
+
+    # /start
+    if text.strip() == "/start":
+        await bot_reply(
+            chat_id,
+            "👋 **Welcome!**\n\n"
+            "Mujhe **TeraBox link** bhejo (saath mein **image** bhi bhej sakte ho) "
+            "aur main tumhe deta hun:\n\n"
+            "🖼 Catbox image link\n"
+            "▶️ Stream link\n\n"
+            "**Supported domains:**\n"
+            "`terabox.com, 1024terabox.com, teraboxapp.com,\n"
+            "nephobox.com, mirrorbox.com, freeterabox.com,\n"
+            "teraboxlink.com, 4funbox.com, terafileshare.com`\n\n"
+            "💡 Image aur link ek saath ya alag alag bhej sakte ho!"
+        )
         return
 
-    await client.send_message(channel_c_entity, "\n".join(lines), parse_mode="md")
-    log.info("🎉 Done! Sab links Channel C pe save ho gaye.")
+    # TeraBox URL check
+    tera_match = TERABOX_REGEX.search(text)
+    tera_url = tera_match.group(0) if tera_match else None
+
+    # Image check
+    has_image = isinstance(msg.media, MessageMediaPhoto)
+    img_bytes = None
+    if has_image:
+        img_bytes = await bot_client.download_media(msg.media, bytes)
+
+    # Pending mein store
+    if chat_id not in user_pending:
+        user_pending[chat_id] = {}
+
+    if img_bytes:
+        user_pending[chat_id]["image"] = img_bytes
+    if tera_url:
+        user_pending[chat_id]["tera_url"] = tera_url
+
+    pending = user_pending[chat_id]
+
+    # Dono available hain → process karo
+    if "tera_url" in pending:
+        asyncio.create_task(process_request(
+            chat_id,
+            pending.get("image"),
+            pending["tera_url"]
+        ))
+    elif "image" in pending and "tera_url" not in pending:
+        await bot_reply(chat_id, "✅ Image mil gayi! Ab **TeraBox link** bhejo.")
+    else:
+        await bot_reply(chat_id, "❓ TeraBox link nahi mili. Sahi link bhejo.")
 
 
+# ── Entry Point ───────────────────────────────────────────────
 async def main():
-    log.info("🚀 User bot start ho raha hai...")
-    await client.start()
-    log.info(f"✅ Channel A sun raha hun: {CHANNEL_A}")
-    log.info("⏳ Messages ka wait kar raha hun... (bot running)")
-    try:
-        await client.run_until_disconnected()
-    except Exception as e:
-        log.error(f"❌ Bot crash hua: {e}")
-        raise
+    log.info("🚀 Bot + UserBot start ho rahe hain...")
+    await user_client.start()
+    await bot_client.start(bot_token=BOT_TOKEN)
+
+    me = await user_client.get_me()
+    bot_me = await bot_client.get_me()
+    log.info(f"✅ UserBot: {me.first_name} (@{me.username})")
+    log.info(f"✅ Bot: @{bot_me.username}")
+    log.info("⏳ Users ke messages ka wait kar raha hun...")
+
+    await asyncio.gather(
+        user_client.run_until_disconnected(),
+        bot_client.run_until_disconnected(),
+    )
 
 
 if __name__ == "__main__":
