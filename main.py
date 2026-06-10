@@ -29,7 +29,7 @@ TERA_BOT       = os.getenv("TERA_BOT")
 STREAM_BOT     = os.getenv("STREAM_BOT")
 
 def parse_channel(val):
-    if val and val.lstrip("-").isdigit():
+     if val and val.lstrip("-").isdigit():
         return int(val)
     return val
 
