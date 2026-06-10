@@ -129,30 +129,25 @@ async def process_request(chat_id: int, img_bytes: bytes | None, tera_url: str):
         user_pending.pop(chat_id, None)
         return
 
-    # 3. Video → Channel B
-    await bot_reply(chat_id, "📤 Video channel pe store ho rahi hai...")
+    # 3. Stream link — TeraBox ki ORIGINAL video se (naya msg = naya link)
+    await bot_reply(chat_id, "▶️ Stream link ban raha hai...")
+    stream_link = await get_stream_link(tera_video_msg)
+
+    # 4. Video → Channel B
+    await bot_reply(chat_id, "📤 Video store ho rahi hai...")
     channel_b_entity = await user_client.get_entity(CHANNEL_B)
-    forwarded_msg = await user_client.forward_messages(
+    await user_client.forward_messages(
         entity=channel_b_entity,
         messages=tera_video_msg,
     )
-    log.info(f"✅ Channel B — ID: {forwarded_msg.id}")
+    log.info("✅ Channel B pe forward hua")
 
-    # 4. Stream link
-    await bot_reply(chat_id, "▶️ Stream link ban raha hai...")
-    stream_link = await get_stream_link(forwarded_msg)
-
-    # 5. User ko result
-    lines = ["✅ **Done! Yahan hain tumhare links:**\n"]
+    # 5. User ko sirf 2 links
+    lines = ["✅ **Done!**\n"]
     if catbox_link:
-        lines.append(f"🖼 **Cover Image:**\n{catbox_link}")
+        lines.append(f"🖼 **Cover:**\n{catbox_link}")
     if stream_link:
-        lines.append(f"▶️ **Stream Link:**\n{stream_link}")
-
-    channel_b_full = await user_client.get_entity(CHANNEL_B)
-    b_username = getattr(channel_b_full, "username", None)
-    if b_username:
-        lines.append(f"📁 **Direct Post:**\nhttps://t.me/{b_username}/{forwarded_msg.id}")
+        lines.append(f"▶️ **Stream:**\n{stream_link}")
 
     await bot_reply(chat_id, "\n\n".join(lines))
     log.info(f"🎉 Chat {chat_id} ka kaam done!")
